@@ -1,0 +1,491 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Scroll Image Sequence</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            background: #000;
+            overflow: hidden;
+            position: relative;
+            height: 100vh;
+        }
+
+        #canvas-container {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        #sequence-canvas {
+            max-width: 100%;
+            max-height: 100%;
+            object-fit: contain;
+        }
+
+        .loading-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            background: #000;
+            color: #fff;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            transition: opacity 0.5s;
+        }
+
+        .loading-overlay.hidden {
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        .loading-bar {
+            width: 200px;
+            height: 4px;
+            background: rgba(255, 255, 255, 0.2);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 20px;
+        }
+
+        .loading-progress {
+            height: 100%;
+            background: #fff;
+            border-radius: 2px;
+            transition: width 0.3s;
+        }
+
+        .debug-info {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.8);
+            color: #fff;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: monospace;
+            font-size: 12px;
+            z-index: 100;
+            display: none; /* Set to 'block' to show debug info */
+        }
+
+        .stop-indicator {
+            position: fixed;
+            left: 20px;
+            top: 50%;
+            transform: translateY(-50%);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            z-index: 100;
+        }
+
+        .stop-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: rgba(255, 255, 255, 0.3);
+            transition: all 0.3s;
+            cursor: pointer;
+        }
+
+        .stop-dot.active {
+            width: 12px;
+            height: 12px;
+            background: rgba(255, 255, 255, 0.9);
+        }
+
+        .stop-dot:hover {
+            background: rgba(255, 255, 255, 0.6);
+        }
+
+        .navigation-hint {
+            position: fixed;
+            bottom: 30px;
+            left: 50%;
+            transform: translateX(-50%);
+            color: rgba(255, 255, 255, 0.6);
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            font-size: 14px;
+            text-align: center;
+            z-index: 100;
+            transition: opacity 0.3s;
+        }
+
+        .navigation-hint.hidden {
+            opacity: 0;
+        }
+    </style>
+</head>
+<body>
+    <!-- Loading Overlay -->
+    <div class="loading-overlay" id="loadingOverlay">
+        <div>Loading Images...</div>
+        <div class="loading-bar">
+            <div class="loading-progress" id="loadingProgress"></div>
+        </div>
+        <div id="loadingText" style="margin-top: 10px; font-size: 12px;">0%</div>
+    </div>
+
+    <!-- Main Canvas Container -->
+    <div id="canvas-container">
+        <canvas id="sequence-canvas"></canvas>
+    </div>
+
+    <!-- Stop Point Indicators -->
+    <div class="stop-indicator" id="stopIndicator"></div>
+
+    <!-- Navigation Hint -->
+    <div class="navigation-hint" id="navigationHint">
+        Scroll or use arrow keys to navigate
+    </div>
+
+    <!-- Debug Info -->
+    <div class="debug-info" id="debugInfo">
+        <div>Frame: <span id="currentFrame">1</span> / <span id="totalFrames">1</span></div>
+        <div>Stop Point: <span id="currentStop">1</span> / 14</div>
+        <div>Status: <span id="transitionStatus">Ready</span></div>
+    </div>
+
+    <script>
+        // ============= CONFIGURATION =============
+        const CONFIG = {
+            // Total number of images in the sequence
+            totalFrames: 684, // Adjust this to match your image sequence count
+            
+            // Image file extension
+            imageExtension: 'jpg', // Change to 'png' if needed
+            
+            // Folder containing the images
+            imagePath: 'imgseq/',
+            
+            // Stop points - frame numbers where scroll should pause
+            // Add your 14 specific frame numbers here
+            stopPoints: [
+                1,    // Stop 1 - Start
+                75,    // Stop 2
+                120,   // Stop 3
+                164,   // Stop 4
+                198,   // Stop 5
+                250,   // Stop 6
+                312,   // Stop 7
+                360,   // Stop 8
+                412,   // Stop 9
+                450,   // Stop 10
+                508,   // Stop 11
+                565,   // Stop 12
+                620,   // Stop 13
+                684   // Stop 14 - End
+            ],
+            
+            // Animation settings
+            transitionSpeed: 0.01, // Speed of transition between stop points (0.01 = slow, 0.2 = fast)
+            scrollSensitivity: 50, // Minimum scroll delta to trigger navigation
+            scrollCooldown: 1000, // Milliseconds to wait before allowing another scroll
+            
+            // Display settings
+            showDebugInfo: false, // Set to true to see debug information
+            showStopIndicators: true, // Show dots for stop points
+            showNavigationHint: true, // Show scroll hint at bottom
+            hideHintAfter: 5000 // Hide navigation hint after this many milliseconds
+        };
+
+        // ============= GLOBAL VARIABLES =============
+        let images = [];
+        let currentFrameIndex = 0;
+        let targetFrameIndex = 0;
+        let isLoading = true;
+        let currentStopIndex = 0;
+        let isTransitioning = false;
+        let lastScrollTime = 0;
+        let scrollAccumulator = 0;
+        let touchStartY = 0;
+
+        const canvas = document.getElementById('sequence-canvas');
+        const ctx = canvas.getContext('2d');
+        const loadingOverlay = document.getElementById('loadingOverlay');
+        const loadingProgress = document.getElementById('loadingProgress');
+        const loadingText = document.getElementById('loadingText');
+        const debugInfo = document.getElementById('debugInfo');
+        const stopIndicator = document.getElementById('stopIndicator');
+        const navigationHint = document.getElementById('navigationHint');
+
+        // ============= INITIALIZATION =============
+        function init() {
+            // Show debug info if configured
+            if (CONFIG.showDebugInfo) {
+                debugInfo.style.display = 'block';
+            }
+
+            // Create stop indicators
+            if (CONFIG.showStopIndicators) {
+                createStopIndicators();
+            }
+
+            // Hide navigation hint after delay
+            if (CONFIG.showNavigationHint) {
+                setTimeout(() => {
+                    navigationHint.classList.add('hidden');
+                }, CONFIG.hideHintAfter);
+            }
+
+            // Load all images
+            preloadImages();
+        }
+
+        // ============= IMAGE LOADING =============
+        function preloadImages() {
+            let loadedCount = 0;
+
+            for (let i = 1; i <= CONFIG.totalFrames; i++) {
+                const img = new Image();
+                const imagePath = `${CONFIG.imagePath}${i}.${CONFIG.imageExtension}`;
+                
+                img.onload = () => {
+                    loadedCount++;
+                    updateLoadingProgress(loadedCount);
+                    
+                    if (loadedCount === CONFIG.totalFrames) {
+                        onImagesLoaded();
+                    }
+                };
+                
+                img.onerror = () => {
+                    console.error(`Failed to load image: ${imagePath}`);
+                    loadedCount++;
+                    updateLoadingProgress(loadedCount);
+                    
+                    if (loadedCount === CONFIG.totalFrames) {
+                        onImagesLoaded();
+                    }
+                };
+                
+                img.src = imagePath;
+                images[i - 1] = img;
+            }
+        }
+
+        function updateLoadingProgress(loaded) {
+            const percent = Math.round((loaded / CONFIG.totalFrames) * 100);
+            loadingProgress.style.width = `${percent}%`;
+            loadingText.textContent = `${percent}%`;
+        }
+
+        function onImagesLoaded() {
+            isLoading = false;
+            
+            // Hide loading overlay
+            loadingOverlay.classList.add('hidden');
+            
+            // Setup canvas
+            if (images[0]) {
+                canvas.width = images[0].width;
+                canvas.height = images[0].height;
+                drawFrame(0);
+            }
+            
+            // Setup event listeners
+            setupEventListeners();
+            
+            // Start animation loop
+            animate();
+        }
+
+        // ============= EVENT HANDLING =============
+        function setupEventListeners() {
+            // Mouse wheel event
+            window.addEventListener('wheel', handleWheel, { passive: false });
+            
+            // Touch events for mobile
+            window.addEventListener('touchstart', handleTouchStart, { passive: false });
+            window.addEventListener('touchmove', handleTouchMove, { passive: false });
+            window.addEventListener('touchend', handleTouchEnd, { passive: false });
+            
+            // Keyboard navigation
+            window.addEventListener('keydown', handleKeyboard);
+        }
+
+        function handleWheel(e) {
+            e.preventDefault();
+            
+            if (isLoading || isTransitioning) return;
+            
+            const now = Date.now();
+            if (now - lastScrollTime < CONFIG.scrollCooldown) return;
+            
+            // Accumulate scroll delta
+            scrollAccumulator += e.deltaY;
+            
+            // Check if accumulated scroll exceeds sensitivity threshold
+            if (Math.abs(scrollAccumulator) >= CONFIG.scrollSensitivity) {
+                if (scrollAccumulator > 0) {
+                    // Scrolling down - go to next stop
+                    navigateToStop(currentStopIndex + 1);
+                } else {
+                    // Scrolling up - go to previous stop
+                    navigateToStop(currentStopIndex - 1);
+                }
+                
+                scrollAccumulator = 0;
+                lastScrollTime = now;
+            }
+        }
+
+        function handleTouchStart(e) {
+            if (isLoading || isTransitioning) return;
+            touchStartY = e.touches[0].clientY;
+        }
+
+        function handleTouchMove(e) {
+            e.preventDefault();
+        }
+
+        function handleTouchEnd(e) {
+            if (isLoading || isTransitioning) return;
+            
+            const touchEndY = e.changedTouches[0].clientY;
+            const deltaY = touchStartY - touchEndY;
+            
+            if (Math.abs(deltaY) > 50) { // Minimum swipe distance
+                if (deltaY > 0) {
+                    // Swiped up - go to next stop
+                    navigateToStop(currentStopIndex + 1);
+                } else {
+                    // Swiped down - go to previous stop
+                    navigateToStop(currentStopIndex - 1);
+                }
+            }
+        }
+
+        function handleKeyboard(e) {
+            if (isLoading || isTransitioning) return;
+            
+            if (e.key === 'ArrowDown' || e.key === ' ' || e.key === 'PageDown') {
+                e.preventDefault();
+                navigateToStop(currentStopIndex + 1);
+            } else if (e.key === 'ArrowUp' || e.key === 'PageUp') {
+                e.preventDefault();
+                navigateToStop(currentStopIndex - 1);
+            } else if (e.key === 'Home') {
+                e.preventDefault();
+                navigateToStop(0);
+            } else if (e.key === 'End') {
+                e.preventDefault();
+                navigateToStop(CONFIG.stopPoints.length - 1);
+            }
+        }
+
+        // ============= NAVIGATION =============
+        function navigateToStop(stopIndex) {
+            // Boundary checks
+            if (stopIndex < 0 || stopIndex >= CONFIG.stopPoints.length) return;
+            if (stopIndex === currentStopIndex) return;
+            
+            // Set transition state
+            isTransitioning = true;
+            currentStopIndex = stopIndex;
+            
+            // Set target frame
+            targetFrameIndex = CONFIG.stopPoints[stopIndex] - 1;
+            
+            // Update indicators
+            updateStopIndicators();
+            
+            // Update debug info
+            updateDebugInfo();
+        }
+
+        function createStopIndicators() {
+            CONFIG.stopPoints.forEach((point, index) => {
+                const dot = document.createElement('div');
+                dot.className = 'stop-dot';
+                if (index === 0) dot.classList.add('active');
+                dot.onclick = () => navigateToStop(index);
+                dot.title = `Stop ${index + 1} (Frame ${point})`;
+                stopIndicator.appendChild(dot);
+            });
+        }
+
+        function updateStopIndicators() {
+            const dots = stopIndicator.querySelectorAll('.stop-dot');
+            dots.forEach((dot, index) => {
+                if (index === currentStopIndex) {
+                    dot.classList.add('active');
+                } else {
+                    dot.classList.remove('active');
+                }
+            });
+        }
+
+        // ============= RENDERING =============
+        function drawFrame(frameIndex) {
+            if (!images[frameIndex]) return;
+            
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            ctx.drawImage(images[frameIndex], 0, 0, canvas.width, canvas.height);
+        }
+
+        function animate() {
+            if (!isLoading) {
+                // Smooth interpolation to target frame
+                const diff = targetFrameIndex - currentFrameIndex;
+                
+                if (Math.abs(diff) > 0.5) {
+                    currentFrameIndex += diff * CONFIG.transitionSpeed;
+                    
+                    const roundedFrame = Math.round(currentFrameIndex);
+                    drawFrame(roundedFrame);
+                    
+                    if (CONFIG.showDebugInfo) {
+                        document.getElementById('transitionStatus').textContent = 'Transitioning...';
+                    }
+                } else {
+                    // Snap to final frame and end transition
+                    currentFrameIndex = targetFrameIndex;
+                    drawFrame(targetFrameIndex);
+                    isTransitioning = false;
+                    
+                    if (CONFIG.showDebugInfo) {
+                        document.getElementById('transitionStatus').textContent = 'Ready';
+                    }
+                }
+                
+                // Update current frame display
+                if (CONFIG.showDebugInfo) {
+                    document.getElementById('currentFrame').textContent = Math.round(currentFrameIndex) + 1;
+                }
+            }
+            
+            requestAnimationFrame(animate);
+        }
+
+        // ============= DEBUG =============
+        function updateDebugInfo() {
+            if (!CONFIG.showDebugInfo) return;
+            
+            document.getElementById('totalFrames').textContent = CONFIG.totalFrames;
+            document.getElementById('currentStop').textContent = currentStopIndex + 1;
+        }
+
+        // ============= START =============
+        init();
+    </script>
+</body>
+</html>
